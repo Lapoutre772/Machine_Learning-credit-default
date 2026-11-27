@@ -1,21 +1,21 @@
-"""M1 - Chargement et nettoyage du dataset "Default of Credit Card Clients" (UCI, id=350).
+"""M1 - Loading and cleaning the "Default of Credit Card Clients" dataset (UCI, id=350).
 
-Contrat d'interface avec les autres modules :
-    load_raw()   -> DataFrame brut (colonnes X1..X23 + Y)
-    clean(df)    -> DataFrame propre `df_clean` (colonnes nommees, cible `default`)
-    CATEGORICAL_COLS, NUMERIC_COLS, TARGET : listes de colonnes utilisees par M3
+Interface used by the other modules:
+    load_raw()   -> raw DataFrame (columns X1..X23 + Y)
+    clean(df)    -> clean DataFrame `df_clean` (named columns, target `default`)
+    CATEGORICAL_COLS, NUMERIC_COLS, TARGET -> column lists used by M3
 """
 from pathlib import Path
 
 import pandas as pd
 
-# Le cache est place a la racine du repo (data/), quel que soit le dossier d'execution.
+# The cache lives at the repo root (data/), wherever the script is run from.
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 RAW_CACHE = DATA_DIR / "default_credit_raw.csv"
 
 TARGET = "default"
 
-# Noms d'origine (X1..X23) -> noms de la documentation UCI.
+# Original names (X1..X23) -> names from the UCI documentation.
 COLUMN_NAMES = {
     "X1": "LIMIT_BAL", "X2": "SEX", "X3": "EDUCATION", "X4": "MARRIAGE", "X5": "AGE",
     "X6": "PAY_0", "X7": "PAY_2", "X8": "PAY_3", "X9": "PAY_4", "X10": "PAY_5", "X11": "PAY_6",
@@ -25,16 +25,17 @@ COLUMN_NAMES = {
     "X21": "PAY_AMT4", "X22": "PAY_AMT5", "X23": "PAY_AMT6",
 }
 
-# Variables qui seront encodees en one-hot par M3 ; toutes les autres sont numeriques.
+# M3 will one-hot encode these three columns; every other feature is numeric.
 CATEGORICAL_COLS = ["SEX", "EDUCATION", "MARRIAGE"]
 NUMERIC_COLS = [c for c in COLUMN_NAMES.values() if c not in CATEGORICAL_COLS]
 
 
 def load_raw(use_cache: bool = True) -> pd.DataFrame:
-    """Charge le dataset brut depuis le cache local, sinon le telecharge via ucimlrepo."""
+    """Load the raw dataset from the local cache, or download it with ucimlrepo."""
     if use_cache and RAW_CACHE.exists():
         return pd.read_csv(RAW_CACHE)
-    from ucimlrepo import fetch_ucirepo  # import local : inutile si le cache existe
+    # Imported here so the package is only needed on the first run.
+    from ucimlrepo import fetch_ucirepo
 
     dataset = fetch_ucirepo(id=350)
     df = dataset.data.features.join(dataset.data.targets)
@@ -44,32 +45,35 @@ def load_raw(use_cache: bool = True) -> pd.DataFrame:
 
 
 def clean(df: pd.DataFrame) -> pd.DataFrame:
-    """Renomme les colonnes et regroupe les codes non documentes.
+    """Rename the columns and merge the undocumented category codes.
 
-    Toutes les operations sont des correspondances fixes, sans rien apprendre des
-    donnees : elles peuvent donc etre faites avant le split sans fuite de donnees.
+    Every step here is a fixed mapping that learns nothing from the data, so it is
+    safe to run before the train/test split (no data leakage).
     """
     df = df.rename(columns={**COLUMN_NAMES, "Y": TARGET}).copy()
 
-    # EDUCATION : 1=postgraduate, 2=university, 3=high school, 4=other.
-    # Les codes 0, 5, 6 ne sont pas documentes -> regroupes dans "other" (4).
+    # EDUCATION: 1 = graduate school, 2 = university, 3 = high school, 4 = others.
+    # Codes 0, 5 and 6 are not in the UCI documentation. Codes 0 and 5 have default
+    # rates close to code 4 (0.0% and 6.4% vs 5.7%), so we merge them into 4.
+    # Code 6 is higher (15.7%) but has only 51 clients, too few to keep on its own.
     df["EDUCATION"] = df["EDUCATION"].replace({0: 4, 5: 4, 6: 4})
 
-    # MARRIAGE : 1=married, 2=single, 3=other. Le code 0 n'est pas documente -> 3.
+    # MARRIAGE: 1 = married, 2 = single, 3 = others. Code 0 is undocumented,
+    # so we treat it as "others".
     df["MARRIAGE"] = df["MARRIAGE"].replace({0: 3})
-        # Doublons : 35 lignes identiques (0,12 %) sont conservees. Ce sont des comptes
-    # inactifs (factures et paiements nuls, PAY_x = -2), donc des profils sans
-    # variation : sans colonne ID, rien ne prouve que ce soit un meme client.
 
+    # The data has 35 duplicated rows (0.12%). We keep them: there is no customer ID,
+    # so they are most likely different clients with identical values (such as
+    # inactive accounts), and dropping them would be an arbitrary choice.
     return df
 
 
 def validate(df: pd.DataFrame) -> None:
-    """Controles de coherence : leve une AssertionError si quelque chose cloche."""
-    assert df.shape == (30000, 24), f"forme inattendue : {df.shape}"
-    assert not df.isna().any().any(), "valeurs manquantes inattendues"
-    assert set(df[TARGET].unique()) == {0, 1}, "la cible doit etre binaire"
-    assert set(df["SEX"].unique()) <= {1, 2}, "SEX hors {1, 2}"
-    assert set(df["EDUCATION"].unique()) <= {1, 2, 3, 4}, "EDUCATION hors {1..4}"
-    assert set(df["MARRIAGE"].unique()) <= {1, 2, 3}, "MARRIAGE hors {1..3}"
-    assert abs(df[TARGET].mean() - 0.2212) < 0.001, "taux de defaut different de 22.12 %"
+    """Sanity checks on the cleaned data. Raises an AssertionError if something is off."""
+    assert df.shape == (30000, 24), f"unexpected shape: {df.shape}"
+    assert not df.isna().any().any(), "unexpected missing values"
+    assert set(df[TARGET].unique()) == {0, 1}, "the target must be binary"
+    assert set(df["SEX"].unique()) <= {1, 2}, "SEX outside {1, 2}"
+    assert set(df["EDUCATION"].unique()) <= {1, 2, 3, 4}, "EDUCATION outside {1..4}"
+    assert set(df["MARRIAGE"].unique()) <= {1, 2, 3}, "MARRIAGE outside {1..3}"
+    assert abs(df[TARGET].mean() - 0.2212) < 0.001, "default rate differs from 22.12%"
